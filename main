@@ -1,0 +1,151 @@
+import tensorflow as tf
+import numpy as np
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+import csv
+
+class data_loader:
+    
+    def __init__(self):
+        self.training_data = list()
+        self.validation_data = list()
+    
+    def load_data(self,path):
+        for f in os.listdir(path):
+            with open(os.path.join(path,f), newline='') as csvfile:
+                rows = csv.reader(csvfile)
+                for row in rows:
+                    temp = list()
+                    for r in row:
+                        if(r=='open_time'):
+                            break
+                        else:
+                            temp.append(float(r))
+                    if(len(temp)>0):
+                        self.training_data.append(temp)
+        self.training_data = np.array(self.training_data)
+        print('total_data',self.training_data.shape)
+    
+    def data_time_sorting(self):
+        self.training_data = np.array(sorted(self.training_data, key = lambda s: s[0]))
+    
+    def label_normalize(self,batch_sequence_data,batch_label,z_score_value):
+        for i in range(batch_label.shape[0]):
+            batch_label[i][0] = (batch_label[i][0]-z_score_value[i][0][0])/z_score_value[i][0][1]
+        return batch_label
+    
+    def feature_normalize(self,batch_sequence_data):
+        z_score_value = np.zeros(shape=[batch_sequence_data.shape[0],batch_sequence_data.shape[-1],2])
+        for i in range(batch_sequence_data.shape[0]):
+            for j in range(batch_sequence_data.shape[-1]):
+                mean = np.mean(batch_sequence_data[i,:,j])
+                std = np.std(batch_sequence_data[i,:,j])
+                z_score_value[i][j] = [mean,std]
+                batch_sequence_data[i,:,j] = (batch_sequence_data[i,:,j]-mean)/std
+        return batch_sequence_data,z_score_value
+    
+    def get_batch_data(self,shuffle_idx_list,now_idx,sequence_length=24,batch_size=1,
+                       feature_id=[1,2,3,4,5,7,8,9,10],label_id=4):
+        batch_sequence_data = np.zeros(shape=[batch_size,sequence_length,len(feature_id)])
+        batch_label = np.zeros(shape=[batch_size,1])
+        
+        for i in range(batch_size):
+            batch_label[i][0] = self.training_data[shuffle_idx_list[i+now_idx]+sequence_length][label_id]
+            for j in range(sequence_length):
+                for x in range(len(feature_id)):
+                    batch_sequence_data[i][j][x] = self.training_data[shuffle_idx_list[i+now_idx]+j][feature_id[x]]
+        
+        #print(batch_sequence_data[0][0],batch_label[0])
+        batch_sequence_data,z_score_value = self.feature_normalize(batch_sequence_data)
+        batch_label = self.label_normalize(batch_sequence_data,batch_label,z_score_value)
+
+        return batch_sequence_data,batch_label,z_score_value
+            
+        
+                
+    
+    
+class LSTM_model:
+    
+    def __init__(self,dim=256,dropout=0.9):
+        self.dim = dim
+        self.dropout = dropout
+    
+    def __call__(self,input_sequence):
+        cell = tf.contrib.rnn.DropoutWrapper(tf.contrib.rnn.BasicLSTMCell(num_units=self.dim),output_keep_prob=self.dropout)
+        outputs,last_states = tf.nn.dynamic_rnn(cell=cell,inputs=input_sequence,dtype=tf.float32)
+        
+        print('outputs',outputs)
+        print('last_state',last_states)
+        
+        outputs = outputs[:,-1,:]
+        outputs = tf.layers.dense(outputs,1)
+        
+        return outputs
+    
+    def calculate_loss(self,logits,labels,method='MAE'):
+        if(method=='MAE'):
+            loss = tf.reduce_mean(tf.abs(logits-labels))
+        elif(method=='power'):
+            loss = tf.reduce_mean(tf.pow(logits-labels,2))
+        
+        return loss
+        
+
+
+if(__name__=='__main__'):
+    
+    epoch = 100
+    batch_size = 32
+    sequence_length = 24
+    save_dir = './checkpoint_dir_af2/MyModel-'
+    
+    d = data_loader()
+    d.load_data('./100_day_data')
+    d.data_time_sorting()
+    shuffle_idx = np.arange(d.training_data.shape[0]-sequence_length)
+    #batch_sequence_data,batch_label,z_score_value = d.get_batch_data([0])
+    #print(batch_sequence_data[0][0],batch_label[0])
+    #print(batch_label)
+    
+    input_sequence = tf.placeholder(shape=[None,24,9],dtype=tf.float32)
+    input_label = tf.placeholder(shape=[None,1],dtype=tf.float32)
+    model = LSTM_model()
+    outputs = model(input_sequence)
+    
+    loss = model.calculate_loss(outputs,input_label)
+    
+    with tf.variable_scope('optimize'):
+        global_step = tf.get_variable('global_step', [], dtype=tf.int32,
+                                          initializer=tf.constant_initializer(0), trainable=False)
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        opt = tf.train.AdamOptimizer(1e-3,name='optimizer')
+        with tf.control_dependencies(update_ops):
+            grads = opt.compute_gradients(loss)
+            train_op = opt.apply_gradients(grads, global_step=global_step)
+        
+        ######## batch_norm save
+        var_list = tf.trainable_variables()
+        g_list = tf.global_variables()
+        bn_moving_vars = [g for g in g_list if 'moving_mean' in g.name]
+        bn_moving_vars += [g for g in g_list if 'moving_variance' in g.name]
+        var_list += bn_moving_vars
+        saver = tf.train.Saver(var_list=var_list,max_to_keep=100)
+        ########
+    
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        
+        for i in range(epoch):
+            np.random.shuffle(shuffle_idx)
+            total_loss = 0
+            
+            for j in range(shuffle_idx.shape[0]//batch_size):
+                batch_sequence_data,batch_label,z_score_value = d.get_batch_data(shuffle_idx,j)
+                _,ls,result = sess.run([train_op,loss,outputs],feed_dict={input_sequence:batch_sequence_data,input_label:batch_label})
+                total_loss+=ls
+                if(j%100==0 and j!=0):
+                    print('label',batch_label[0],'predict',result[0])
+                    print('epoch',i,'loss',total_loss/j)
+                saver.save(sess,save_dir,global_step=i) 
+
