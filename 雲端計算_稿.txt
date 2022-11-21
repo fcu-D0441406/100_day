@@ -1,0 +1,93 @@
+這裡先介紹一下概要
+
+這篇論文作者主要使想要改善edge system 再發生overload 或是 failure 時的反應速度,
+關於這方面作者認為有幾項挑戰像是edge device的不可靠姓和現在要求deadline越來越嚴格的應用程式
+
+主要的改善方向就是對於不必要的任務轉移這方面去做優化讓這它可以更聰明的去反應failure
+這裡作者提出的一個使用深度學習的gan model來做,主要的方法就是讓model去預測未來某個edge device會不會發生錯誤
+如果會發生錯誤的話就提早將任務分配給其他的device,就不需要在發生錯誤時再做task migration 的動作,如此一來就可以
+降低所需的時間
+
+
+這裡先介紹現在現有處理fault的方法
+現在最受歡迎的方法就是提供node redundancy 去避免edge device造成停機,但是隨著edge device的數量增加,要加的redundancy
+也會變得越來越多,如果成本考慮的話作者認為這不是一個好的解法
+
+那另外一個方法是將任務複製到其他節點上,這個方法對於resource有限制的狀況不是一個理想的選擇因為這會使
+他們更容易發生fault 的狀況出現
+
+這裡介紹這篇論文的方法及作者想法
+前面提到這個方法主要是透過預測未來會發生的錯誤來提前轉移task,所以對於準確的去偵測錯誤,預測判斷錯誤原因以及要將任務轉移到哪個
+node device這幾點是非常重要的,為了達到這幾種目標,作者創建了一個深度學習GAN model 結果也是非常成功的,與別的方法相比可以降低
+預測錯誤的狀況發生,提供一個飯用的anomaly prediction架構出來
+
+進入方法的部份,這裡先介紹系統環境
+先說右邊這塊compute layer 的部份,這裡是由多個edge device 組成的edge computing 環境 那這邊都是架在相同地方的LAN上
+左邊這塊IOT layer 部分sensor 會透過gateway去發送task給,中間的management layer然後透過這個container scheduling
+這個作者開發的module 去決定哪個task要給哪個edge device 去做,決定完後再由edge broker發送任務到相應的edge device上 
+
+這個方法主要會分成兩個部份,第一種是fault prediction 那這部份主要就是去預測錯誤是否會發生以及是發生什麼錯誤
+
+這邊有幾個作者設定的變數第一個m代表是有幾台host machine在這個系統裡 H代表所有host的集合
+這邊這個It 代表這是第幾個interval,St 代表scheduling decision就是這個任務要分配給哪個host, n代表host 的特徵數量,
+這個xt代表這個interval m台host的n個特徵數量,後面會以time series 形容
+
+Fault prediction 這個model 的input 是time series 因為這個model是predict在t interval 時會不會發生錯誤這邊結果就是這個
+yt 那yti這個代表每個host的結果,yti如果是0代表沒有錯誤,如果有發生錯誤會以yti=j代表 j這裡是人為設定的fault class 
+
+另外一個是 preemptive migration decision 這部分就是先去預測出要將任務轉移到哪個host 身上 , 他的input是scheduling decision
+St 和上一頁提到的預測的類別yt
+
+這張大圖示整個的model 架構 , 這裡還有幾個變數 Time serires W這個地方有個參數k 代表一個input會含有幾個interval的數量
+另一個scheduling decision 這裡的shape會是一個one hot shape為m的陣列,其中陣列中為1的id代表是要給哪個host id
+
+這邊按照training 順序來說明model , 首先會先training這個fault prototype encoder model,那這個model 主要就是預測會不會發生錯誤
+以及發生錯誤的類別,橘色這一塊特徵擷取的部分是使用GAT這個方法這個方法作者說明他是可以取得所有host的相關性,
+
+{他這邊先是create 一個可以學習的與其他edge host 連載一起形成一個
+graph 再透過計算與每個host 的相似度來得到一組權重(我認為這個可學習的點最後學到的結果是一個像failure 的featrue這樣與其他host
+做相似度後得到的結果就是failure的可能性)這裡用sigmoid 來把結果限縮0~1之間}
+
+藍色這塊是透過GRU這個序列模型來擷取特徵,依照之前的狀態來預測後面有沒有可能發生error
+最後會把橘色與藍色得到的結果併在一起來傳到後面的multi-head attention module 這裡會把m台host分開分別做self attention
+完後再合併出來成最後結果,最後再將multi head attention 結果經過兩個feed foward 得到兩個結果一個是 D為兩類softmax結果
+分別是fault跟pass , P為一個fault class 的feature 最後會在使用k-means去做分群
+
+這邊為算法部分,先把fault prototype encdoer model 設為E , dataset 為{Wt,St,yt} , a和e為k-means的參數,a代表k-mean不伐大小
+e為控制不閥大小參數,這裡會先將{P0~Pc}代表fault class 的部分隨機初始化,首先這裡把St與Wt為入model 後得到D 與 P
+Loss 1 為cross entropy loss 當y label 為0時代表D[0]這個預測為pass的機率越高loss就會越小
+                              y label 大於0時代表D[1]這個預測fault的機率越高loss就會越小
+Loss 2 為 triplet loss 這個loss目的希望預測出來p這個class 的feature要與label 的距離越近越好,同時與其他不同類別的距離越遠越好
+
+下面這邊就是kmean算法 經過迭代後的結果可以代表fault class 的feature
+
+
+接下來會training preemptive migration gan model , 橘色這塊model 輸入是training 完成fault prototype model 的輸出 如果預測為fault輸入為P
+pass 為 0 , 另一個輸入為 schedling decision 經過multi head attention 後在經過tanh會得到一個陣列長度為m value 為-1~1的結果
+再加上原本的schedling decision就會變成一個新的scudeling decision最後找出value最大的id即為新的scudeling decision
+
+藍色這塊為discrimator是用來預測原先的scudeling decision與新的scudeling decision哪個比較好的model,輸入為新的scudeling decision
+經過feed foward與softmax後的到最後結果,如果D[1]>D[0]代表新的decision比較好反之則為舊的decision
+
+這邊有一個Co-simulator的部分 這是一個可以算出QoS score 叫作COSCO的framework,這裡會把fault prototype encoder 結果 E當輸入還有
+scheduling decision 當輸入得到delta,在與原來做相加得到新的decision N ,接下來把St與N餵入discrimator model得到 D
+
+這邊分別為D loss 與 G loss 各自更新個別model,D loss 這裡 Sim代表一個可以算出Qos score 的function,這裡也是一個cross entropy loss
+的Sim(N)>=Sim(S) D[1]代表新的decision比較好的機率要越高越好 D[0]代表舊的decision 比較好的機率要越低越好
+另外則相反,經過optimize之後 discrimator model 就可以有和計算QoS score 類似的功能可以用在online 
+
+G loss 的話希望D model predict出D[1]機率越高越好,D[0]機率越低越好 所以loss 為 log(D1)+log(D0)
+
+這邊為Testing 的部份,先把pretrain weight load 到 model 中,輸入St與Wt得到 D與P結果 ,將Ef與St輸入到Gen得到delta,再將delta與St
+相加得到新decision 最後將St與N輸入到D model 得到最終結果 如果D[1]>D[0} 輸出新decision 反之輸出舊decision
+
+接下來是實驗與比較部分,這裡環境Edge system環境是使用16 node 4G RAM 8個 8G RAM 8個,測試資料為 100 scheduling intervals
+每個間格為300秒 大概8h20min , 那model predict 的環境使用下面這個
+
+
+結論部分 證明PreGAN model 在預測錯誤,診斷錯誤類別,在edge computing環境是可行的
+
+另外因為label data 是很難取得地所以,作者之後會去嘗試使用unsupervise的部分 , 另外之後也會去嘗試federated 或是serverless 平台的
+任務
+
+
