@@ -1,0 +1,42 @@
+今天要報的主題是AVM 虛擬量測，那這邊先簡單量測的作用，一般我們在wafer經過製成機台後為了知道
+製成有沒有發生什麼異常我們會在做完製成後通過量測機台做量測看有沒有在正常的範圍內。
+
+那現在要介紹的虛擬量測 是一種透過製成使用機台sensor的數值來預測量測值的方法，
+那虛擬量測的好處呢有以下幾點
+第一是品質的部分:一般都是透過抽檢的方法來做檢測，用抽檢的主要原因呢是因為送到量測機台量測
+是一件非常耗時間的事，但是如果我們透過虛擬量測就可以在做完製成後就即時愈測量測數值，這樣就可以
+達到每片都檢的狀況
+第二是錢的部分:如果使用虛擬量測就可以減少購買量測機台的預算(一台機檯都是幾百起跳)也可以加快出貨
+的速度(增加效率)
+
+那這次要虛擬量測應用的製程事Plasma蝕刻的製程，這是一種在半導體製程使用上非常多的製程，主要是透過
+化學反應來將表面物質做去除的方法，這次要預測的量測數值就是蝕刻量，這是一個做完這次蝕刻表面厚度會
+減少多少的值
+
+related work 這裡介紹一篇 DeepVM 也是做虛擬量測是跟特徵擷取與pretrain有關的paper，通常之前在挑機台
+參數要用那些時可能都要問製程工程師機台哪個參數重要之類的... ，那作者通過大量沒有量測數據的機台data
+做autoendoer之後再使用 AE encoder 來當特徵擷取的model 來代替專家挑選sensor的步驟
+
+接下來介紹方法的部分，這次AVM model 要predict的目標是 wafer上49點的蝕刻率與偵測是否有異常發生
+那 input data 是機台sensor 與 wafer一開始的厚度 下圖為 sensor 與 wafer49點示意圖
+
+這裡先報告sensor data preprocess方法，一開始raw data格式像下圖一樣為序列格式現在為第幾個step
+step的幾秒目前的N個sensor 的raw data ，那在前處理的部分會取每個step裡sensor的(平均，標準差，最大值，
+最小值)出來， shape 變為 (S,N*4) 之後再計算每一項的平均與標準差做normalize
+
+接下來是蝕刻率的data preprocess，這裡會有蝕刻前厚度與蝕刻後厚度，這裡會把這兩種值混起來取平均和
+標準差做normalize
+
+接下來是model 部分 ， model 的input為 sensor data 與 蝕刻前厚度 ， 這裡會先將兩個input分別進model
+取出特徵後concat在一起之後進蝕刻率model做這次step蝕刻率愈測，預測完後會更新一開始input的蝕刻前值
+之後重複這個recipe的step次數後這邊的thick就會是最終蝕刻後厚度的預測，再把預測的值與蝕刻後厚度label
+做L2 loss 來做 model 的優化 ， 蝕刻率預測主要架構就是這樣
+
+那異常偵測部分與regression部分一樣 會將train好的蝕刻率預測model拿來使用，主要會把training 所有
+無異常發生的data在concat的地方做feature 平均(這裡每個step都會做)，在與所有validation data
+計算cosine similarity 把異常的threshold 切出來當異常偵測的分數，只要某個step相似度小於threshold
+就會判定成異常 (不用分類原因是 alarm data 幾乎沒有)
+
+這邊是某個recipe 的測試結果，這邊是用到10個sensor 這邊主要是電流、溫度、氣體 sensor 用到18台機台
+來做training 訓練資料是(2022/03/01~2023/02/28)2457筆沒有alarm data的資料 ， 
+validadtion是用2023 3月份資料
